@@ -1,0 +1,338 @@
+// BookLeaf Author Support & Communication Portal - database schema.
+// Money values are whole rupees (Int) exactly as in the provided dataset.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------- enums
+
+enum Role {
+  AUTHOR
+  ADMIN
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+// The six categories required by the assignment.
+enum TicketCategory {
+  ROYALTY_PAYMENTS
+  ISBN_METADATA
+  PRINTING_QUALITY
+  DISTRIBUTION_AVAILABILITY
+  PRODUCTION_UPDATES
+  GENERAL_INQUIRY
+}
+
+// Declared in urgency order so ORDER BY priority ASC puts CRITICAL first.
+enum TicketPriority {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+}
+
+// Controlled vocabulary returned by the classification call. ContextService maps
+// intent -> DB_ONLY / KB_ONLY / HYBRID / INSUFFICIENT_INFORMATION with no extra LLM call.
+enum TicketIntent {
+  SALES_FIGURES
+  ROYALTY_STATUS
+  ROYALTY_CALCULATION
+  PRODUCTION_STATUS
+  AVAILABILITY_ISSUE
+  ISBN_ISSUE
+  PRINT_QUALITY_ISSUE
+  POLICY_QUESTION
+  METADATA_UPDATE
+  OTHER
+}
+
+enum AiStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum DraftSource {
+  AI
+  TEMPLATE
+}
+
+enum ContextRoute {
+  DB_ONLY
+  KB_ONLY
+  HYBRID
+  INSUFFICIENT_INFORMATION
+}
+
+enum ValidationStatus {
+  PASSED
+  FLAGGED
+  REJECTED
+}
+
+enum AiOperation {
+  CLASSIFICATION
+  DRAFT
+  SUMMARY
+}
+
+enum AiRunStatus {
+  SUCCESS
+  FAILED
+}
+
+// ---------------------------------------------------------------- identity
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique // always stored lowercase
+  passwordHash String
+  name         String
+  role         Role
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  author          Author?
+  assignedTickets Ticket[]             @relation("TicketAssignee")
+  messages        TicketMessage[]
+  internalNotes   TicketInternalNote[]
+  requestedDrafts AiDraft[]            @relation("DraftRequester")
+  auditLogs       AuditLog[]
+
+  @@map("users")
+}
+
+model Author {
+  id         String   @id @default(uuid())
+  authorCode String   @unique // dataset id, e.g. AUTH001
+  userId     String   @unique
+  phone      String?
+  city       String?
+  joinedDate DateTime @db.Date
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user    User     @relation(fields: [userId], references: [id])
+  books   Book[]
+  tickets Ticket[]
+
+  @@map("authors")
+}
+
+// ---------------------------------------------------------------- catalogue
+
+model Book {
+  id                    String    @id @default(uuid())
+  bookCode              String    @unique // dataset id, e.g. BK001
+  authorId              String
+  title                 String
+  isbn                  String    @unique
+  genre                 String
+  publicationDate       DateTime? @db.Date // null while in production
+  status                String // exact dataset label, e.g. "Published & Live"
+  mrp                   Int? // null while in production
+  authorRoyaltyPerCopy  Int?
+  totalCopiesSold       Int       @default(0)
+  totalRoyaltyEarned    Int       @default(0)
+  royaltyPaid           Int       @default(0)
+  royaltyPending        Int       @default(0)
+  lastRoyaltyPayoutDate DateTime? @db.Date // null = never paid
+  printPartner          String?
+  availableOn           String[]  @default([])
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  author  Author   @relation(fields: [authorId], references: [id])
+  tickets Ticket[]
+
+  @@index([authorId])
+  @@map("books")
+}
+
+// ---------------------------------------------------------------- support
+
+model Ticket {
+  id           String       @id @default(uuid())
+  ticketNumber Int          @unique @default(autoincrement()) // human-friendly reference
+  authorId     String
+  bookId       String? // null = "General / Account Level"
+  subject      String
+  status       TicketStatus @default(OPEN)
+
+  // Effective values (what the admin UI shows/filters on). Set by AI, replaceable by admin.
+  category           TicketCategory?
+  priority           TicketPriority?
+  categoryOverridden Boolean         @default(false) // true => late AI results must not overwrite
+  priorityOverridden Boolean         @default(false)
+
+  // Raw AI classification output, kept for auditing/accuracy review.
+  aiCategory   TicketCategory?
+  aiPriority   TicketPriority?
+  aiConfidence Float?
+  intent       TicketIntent?
+  aiStatus     AiStatus        @default(PENDING)
+  aiError      String?
+
+  assignedToId  String?
+  lastMessageAt DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  author            Author             @relation(fields: [authorId], references: [id])
+  book              Book?              @relation(fields: [bookId], references: [id])
+  assignedTo        User?              @relation("TicketAssignee", fields: [assignedToId], references: [id])
+  messages          TicketMessage[]
+  internalNotes     TicketInternalNote[]
+  conversationState ConversationState?
+  drafts            AiDraft[]
+  aiRuns            AiRun[]
+
+  @@index([status])
+  @@index([category])
+  @@index([priority])
+  @@index([createdAt])
+  @@index([authorId])
+  @@index([assignedToId])
+  @@map("tickets")
+}
+
+// Author-visible conversation. Internal notes live in a separate table on purpose so
+// no author query or AI-context query can leak them by accident.
+model TicketMessage {
+  id         String   @id @default(uuid())
+  ticketId   String
+  senderId   String
+  senderRole Role
+  body       String   @db.Text
+  createdAt  DateTime @default(now())
+
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  sender User   @relation(fields: [senderId], references: [id])
+
+  @@index([ticketId, createdAt])
+  @@map("ticket_messages")
+}
+
+model TicketInternalNote {
+  id          String   @id @default(uuid())
+  ticketId    String
+  createdById String
+  body        String   @db.Text
+  createdAt   DateTime @default(now())
+
+  ticket    Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  createdBy User   @relation(fields: [createdById], references: [id])
+
+  @@index([ticketId])
+  @@map("ticket_internal_notes")
+}
+
+// ---------------------------------------------------------------- AI
+
+// Lightweight per-ticket conversation state so the full history is never sent to the LLM.
+model ConversationState {
+  ticketId                 String          @id
+  currentTopic             TicketCategory?
+  summary                  String?         @db.Text
+  version                  Int             @default(1) // bumped when topic/summary changes
+  lastMessageId            String?
+  summarizedThroughMessageId String?
+  updatedAt                DateTime        @updatedAt
+
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@map("conversation_state")
+}
+
+// Draft cache key = ticketId + lastMessageId + conversationVersion + dbContextHash
+//                   + kbVersion + promptVersion. A completed draft matching all six is reused;
+// Regenerate inserts a new row with the same key and the newest row wins.
+model AiDraft {
+  id                  String            @id @default(uuid())
+  ticketId            String
+  status              AiStatus
+  source              DraftSource
+  route               ContextRoute
+  body                String?           @db.Text
+  lastMessageId       String
+  conversationVersion Int
+  dbContextHash       String
+  kbVersion           String
+  promptVersion       String
+  validationStatus    ValidationStatus?
+  validationIssues    Json?
+  error               String?
+  requestedById       String? // admin who opened/regenerated; null for system-triggered
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+
+  ticket      Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  requestedBy User?  @relation("DraftRequester", fields: [requestedById], references: [id])
+
+  @@index([ticketId, createdAt])
+  @@map("ai_drafts")
+}
+
+model AiRun {
+  id            String      @id @default(uuid())
+  ticketId      String
+  operation     AiOperation
+  provider      String
+  model         String
+  promptVersion String
+  isFallback    Boolean     @default(false)
+  inputTokens   Int?
+  outputTokens  Int?
+  latencyMs     Int
+  status        AiRunStatus
+  error         String?
+  createdAt     DateTime    @default(now())
+
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId])
+  @@index([createdAt])
+  @@map("ai_runs")
+}
+
+model KnowledgeDocument {
+  id        String   @id @default(uuid())
+  slug      String   @unique // e.g. royalty-policy
+  title     String
+  content   String   @db.Text
+  version   Int      @default(1)
+  updatedAt DateTime @updatedAt
+
+  @@map("knowledge_documents")
+}
+
+// ---------------------------------------------------------------- audit
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?
+  action     String // e.g. ticket.status_changed
+  entityType String
+  entityId   String
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  actor User? @relation(fields: [actorId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([actorId])
+  @@map("audit_logs")
+}
