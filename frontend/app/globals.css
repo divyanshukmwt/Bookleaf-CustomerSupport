@@ -1,0 +1,9 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body { @apply bg-[#faf9f8] text-slate-900 antialiased; }
+
+::selection { @apply bg-indigo-100 text-indigo-900; }
+
+:focus-visible { @apply outline-none ring-2 ring-indigo-500 ring-offset-2; }
