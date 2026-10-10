@@ -2,9 +2,10 @@ import { createHash } from 'node:crypto';
 import { Errors } from '../../lib/errors';
 import { prisma } from '../../lib/prisma';
 import { buildFacts, collectAllowed, renderFacts, type AllowedValues, type Facts } from './logic/facts';
+import { buildContextSnapshot, type ContextSnapshot } from './logic/contextSnapshot';
 import { contextFingerprint } from './logic/fingerprint';
 import { kbSlugsFor, routeFor } from './logic/routing';
-import { resolveTopic, type Scope } from './logic/topic';
+import { isCategoryTrusted, resolveTopic, type Scope } from './logic/topic';
 import type { BookFacts, Category, Intent, Route } from './logic/types';
 import { KEEP_RECENT, SUMMARY_THRESHOLD } from './conversation.service';
 
@@ -34,10 +35,11 @@ export interface DraftContext {
   allowed: AllowedValues;
   requiresTimeline: boolean;
   scope: Scope;
+  snapshot: ContextSnapshot; // what is being supplied, stored with the draft for admin verification
 }
 
 const BOOK_SELECT = {
-  title: true, isbn: true, status: true, publicationDate: true, mrp: true, authorRoyaltyPerCopy: true,
+  bookCode: true, title: true, isbn: true, status: true, publicationDate: true, mrp: true, authorRoyaltyPerCopy: true,
   totalCopiesSold: true, totalRoyaltyEarned: true, royaltyPaid: true, royaltyPending: true,
   lastRoyaltyPayoutDate: true, printPartner: true, availableOn: true,
 } as const;
@@ -48,7 +50,7 @@ export async function buildContext(ticketId: string, now = new Date()): Promise<
   const ticket = await prisma.ticket.findUnique({
     where: { id: ticketId },
     select: {
-      id: true, subject: true, category: true, intent: true, authorId: true, bookId: true,
+      id: true, subject: true, category: true, aiCategory: true, categoryOverridden: true, intent: true, authorId: true, bookId: true,
       author: { select: { user: { select: { name: true } } } },
       book: { select: BOOK_SELECT },
       conversationState: true,
@@ -70,6 +72,7 @@ export async function buildContext(ticketId: string, now = new Date()): Promise<
   // Current message takes precedence over the original classification.
   const topic = resolveTopic({
     ticketCategory: ticket.category,
+    categoryTrusted: isCategoryTrusted(ticket),
     ticketIntent: ticket.intent,
     latestAuthorMessage: latestAuthor.body,
     isFirstMessage: latestAuthor.id === firstMessage?.id,
@@ -93,6 +96,7 @@ export async function buildContext(ticketId: string, now = new Date()): Promise<
       conversationVersion: state.version, lastMessageId: lastMessage.id, lastSenderRole: lastMessage.senderRole as 'AUTHOR' | 'ADMIN',
       firstName, subject: ticket.subject, current: '', recent: [], summary: null, needsSummary: false, authorText: '',
       allowed: collectAllowed([], 'OTHER', now), requiresTimeline: false, scope: topic.scope,
+      snapshot: buildContextSnapshot({ scope: topic.scope, intent: 'OTHER', category: null, route, books: [], facts: null, kbDocs: [], kbVersion: 'none', kbExpected: false, query: '' }),
     };
   }
 
@@ -107,10 +111,13 @@ export async function buildContext(ticketId: string, now = new Date()): Promise<
 
   let kbText: string | null = null;
   let kbVersion = 'none';
-  if (route === 'KB_ONLY' || route === 'HYBRID') {
+  let kbDocs: Awaited<ReturnType<typeof prisma.knowledgeDocument.findMany>> = [];
+  const kbExpected = route === 'KB_ONLY' || route === 'HYBRID';
+  if (kbExpected) {
     const slugs = kbSlugsFor(category ?? 'GENERAL_INQUIRY', topic.intent);
     const docs = await prisma.knowledgeDocument.findMany({ where: { slug: { in: slugs } } });
     docs.sort((a, b) => slugs.indexOf(a.slug) - slugs.indexOf(b.slug));
+    kbDocs = docs;
     if (docs.length === 0) {
       route = 'INSUFFICIENT_INFORMATION'; // cannot ground an answer without the KB
     } else {
@@ -152,6 +159,10 @@ export async function buildContext(ticketId: string, now = new Date()): Promise<
     authorText,
     allowed: collectAllowed(books, topic.intent, now),
     scope: topic.scope,
+    snapshot: buildContextSnapshot({
+      scope: topic.scope, intent: topic.intent, category, route, books, facts: route === 'INSUFFICIENT_INFORMATION' ? null : facts, kbDocs, kbVersion, kbExpected,
+      query: `${ticket.subject}\n${latestAuthor.body}`,
+    }),
     requiresTimeline: topic.intent === 'ISBN_ISSUE' || topic.intent === 'PRINT_QUALITY_ISSUE' || topic.intent === 'AVAILABILITY_ISSUE',
   };
 }

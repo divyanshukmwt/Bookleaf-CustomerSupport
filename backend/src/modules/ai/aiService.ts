@@ -4,6 +4,7 @@ import { prisma } from '../../lib/prisma';
 import { AnthropicProvider } from './providers/anthropic.provider';
 import { GeminiProvider } from './providers/gemini.provider';
 import { OpenAIProvider } from './providers/openai.provider';
+import { errorKindFor, sanitizeLogText } from './logic/aiMetrics';
 import { ProviderError, type LlmProvider } from './providers/types';
 
 export type AiErrorCode = 'NOT_CONFIGURED' | 'UNAVAILABLE' | 'REQUEST_ERROR' | 'MALFORMED_OUTPUT';
@@ -80,7 +81,8 @@ export class AIService {
           });
         } catch (err) {
           const message = err instanceof Error ? err.message : 'provider error';
-          await this.record(opts, provider, isFallback, Date.now() - started, 'FAILED', null, null, message);
+          const failure = { kind: errorKindFor({ message, status: err instanceof ProviderError ? err.status : null }), retryable: err instanceof ProviderError ? err.retryable : null };
+          await this.record(opts, provider, isFallback, Date.now() - started, 'FAILED', null, null, message, attempt + 1, failure);
           if (err instanceof ProviderError && err.retryable) {
             lastProviderError = message;
             break; // retryable provider failure -> try the next provider
@@ -91,11 +93,12 @@ export class AIService {
 
         try {
           const value = opts.parse(response.text);
-          await this.record(opts, provider, isFallback, Date.now() - started, 'SUCCESS', response.inputTokens, response.outputTokens, null);
+          await this.record(opts, provider, isFallback, Date.now() - started, 'SUCCESS', response.inputTokens, response.outputTokens, null, attempt + 1, null);
           return { value, provider: provider.name, model: provider.model, isFallback };
         } catch (err) {
           const message = `Malformed output: ${err instanceof Error ? err.message : 'parse error'}`;
-          await this.record(opts, provider, isFallback, Date.now() - started, 'FAILED', response.inputTokens, response.outputTokens, message);
+          // Malformed output is always worth one retry on the same provider, so it is recorded as retryable on attempt 1 only.
+          await this.record(opts, provider, isFallback, Date.now() - started, 'FAILED', response.inputTokens, response.outputTokens, message, attempt + 1, { kind: 'MALFORMED_OUTPUT', retryable: attempt === 0 });
           if (attempt === 1) throw new AiError('MALFORMED_OUTPUT', 'The AI response could not be understood');
           // attempt 0: retry once on the same provider
         }
@@ -113,23 +116,13 @@ export class AIService {
     inputTokens: number | null,
     outputTokens: number | null,
     error: string | null,
+    attempt: number,
+    failure: { kind: string; retryable: boolean | null } | null,
   ) {
-logger.info(
-  {
-    event: 'ai.run',
-    ticketId: opts.ticketId,
-    operation: opts.operation,
-    provider: provider.name,
-    model: provider.model,
-    status,
-    latencyMs,
-    inputTokens,
-    outputTokens,
-    isFallback,
-    providerError: error ? error.slice(0, 300) : undefined,
-  },
-  'ai run finished',
-);
+    logger.info(
+      { event: 'ai.run', ticketId: opts.ticketId, operation: opts.operation, provider: provider.name, model: provider.model, status, latencyMs, inputTokens, outputTokens, isFallback },
+      'ai run finished',
+    );
     try {
       await prisma.aiRun.create({
         data: {
@@ -143,7 +136,11 @@ logger.info(
           outputTokens,
           latencyMs,
           status,
-          error: error ? error.slice(0, 500) : null,
+          attempt,
+          errorCode: failure?.kind ?? null,
+          retryable: failure?.retryable ?? null,
+          // Provider text can echo request details, so it is scrubbed before it is ever stored.
+          error: sanitizeLogText(error),
         },
       });
     } catch (err) {

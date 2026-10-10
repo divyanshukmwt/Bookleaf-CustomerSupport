@@ -11,14 +11,18 @@ export const ticketsRouter = Router();
 ticketsRouter.use(authenticate, requireAuthor);
 ticketsRouter.get('/', h(c.listMine));
 ticketsRouter.post('/', validate({ body: createTicketBody }), h(c.create));
+ticketsRouter.get('/unread', h(c.getMyUnread)); // before /:id
 ticketsRouter.get('/:id', validate({ params: idParam }), h(c.getMine));
+ticketsRouter.post('/:id/read', validate({ params: idParam }), h(c.markMineRead));
 ticketsRouter.post('/:id/messages', validate({ params: idParam, body: messageBody }), h(c.replyMine));
 
 // Admin-facing: /api/v1/admin/tickets
 export const adminTicketsRouter = Router();
 adminTicketsRouter.use(authenticate, requireAdmin);
 adminTicketsRouter.get('/', validate({ query: adminListQuery }), h(c.adminList));
+adminTicketsRouter.get('/unread', h(c.adminUnread)); // before /:id
 adminTicketsRouter.get('/:id', validate({ params: idParam }), h(c.adminGet));
+adminTicketsRouter.post('/:id/read', validate({ params: idParam }), h(c.adminMarkRead));
 adminTicketsRouter.patch('/:id', validate({ params: idParam, body: adminUpdateBody }), h(c.adminUpdate));
 adminTicketsRouter.post('/:id/messages', validate({ params: idParam, body: messageBody }), h(c.adminReply));
 adminTicketsRouter.post('/:id/notes', validate({ params: idParam, body: noteBody }), h(c.adminAddNote));

@@ -6,10 +6,13 @@ import { io, type Socket } from 'socket.io-client';
 import { api, ApiError } from './api';
 import type { User } from './types';
 
+export type ConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'error';
+
 interface AuthState {
   user: User | null;
   loading: boolean;
   socket: Socket | null;
+  connection: ConnectionState;
   login: (email: string, password: string) => Promise<User>;
   logout: () => Promise<void>;
 }
@@ -21,6 +24,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [socket, setSocket] = useState<Socket | null>(null);
+  const [connection, setConnection] = useState<ConnectionState>('connecting');
 
   useEffect(() => {
     api<{ user: User }>('/auth/me')
@@ -37,9 +41,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const socketRef = useRef<Socket | null>(null);
   useEffect(() => {
     if (!userId) return;
-    const s = io({ path: '/socket.io/', withCredentials: true });
+    const s = io(
+      process.env.NEXT_PUBLIC_API_URL || window.location.origin,
+      {
+        path: '/socket.io/',
+        withCredentials: true,
+      }
+    );
     socketRef.current = s;
     setSocket(s);
+    setConnection('connecting');
+    // Status for the UI. A first-time failure is an "error"; once connected, a drop is "reconnecting"
+    // (socket.io retries by itself with backoff).
+    let everConnected = false;
+    s.on('connect', () => { everConnected = true; setConnection('connected'); });
+    s.on('disconnect', (reason) => { if (reason !== 'io client disconnect') setConnection('reconnecting'); });
+    s.on('connect_error', () => setConnection(everConnected ? 'reconnecting' : 'error'));
+    s.io.on('reconnect_attempt', () => setConnection('reconnecting'));
     return () => {
       s.disconnect();
       socketRef.current = null;
@@ -59,7 +77,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     router.replace('/login');
   }, [router]);
 
-  return <Ctx.Provider value={{ user, loading, socket, login, logout }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ user, loading, socket, connection, login, logout }}>{children}</Ctx.Provider>;
 }
 
 export function useAuth(): AuthState {

@@ -18,7 +18,10 @@ function readCookie(header: string | undefined, name: string): string | null {
 }
 
 export function initRealtime(server: HttpServer): void {
-  io = new Server(server, { path: '/socket.io', serveClient: false });
+  io = new Server(server, {
+    path: '/socket.io/',
+    serveClient: false,
+  });
 
   // Same cookie-based auth as the REST API. Unauthenticated sockets are refused.
   io.use(async (socket, next) => {

@@ -2,7 +2,8 @@
 
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
-import { Button, Card, EmptyState, ErrorBanner, PageLoader, StatusBadge } from '@/components/ui';
+import { ConnectionBanner } from '@/components/ConnectionBanner';
+import { Button, Card, EmptyState, ErrorBanner, PageLoader, StatusBadge, UnreadBadge } from '@/components/ui';
 import { api, errorMessage } from '@/lib/api';
 import { useSocketEvent } from '@/lib/auth';
 import { fmtDateTime } from '@/lib/format';
@@ -20,6 +21,7 @@ export default function MyTicketsPage() {
   // Near-real-time: an admin reply or status change refreshes the list without a page reload.
   useSocketEvent('ticket:message', load);
   useSocketEvent('ticket:updated', load);
+  useSocketEvent('ticket:read', load);
 
   if (error) return <ErrorBanner message={error} />;
   if (!tickets) return <PageLoader />;
@@ -30,16 +32,17 @@ export default function MyTicketsPage() {
         <h1 className="text-xl font-semibold">My Tickets</h1>
         <Link href="/author/tickets/new"><Button>New query</Button></Link>
       </div>
+      <ConnectionBanner />
       {tickets.length === 0 ? (
         <EmptyState title="You haven't submitted any queries yet" hint="Have a question about royalties, your ISBN, printing or your book's status? We're here to help." action={<Link href="/author/tickets/new"><Button>Submit a query</Button></Link>} />
       ) : (
         <div className="space-y-3">
           {tickets.map((t) => (
             <Link key={t.id} href={`/author/tickets/${t.id}`} className="block">
-              <Card className="transition hover:border-indigo-300">
+              <Card className="transition hover:border-brand-300">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="min-w-0">
-                    <p className="truncate font-medium">#{t.ticketNumber} · {t.subject}</p>
+                    <p className="flex items-center gap-2 truncate font-medium"><span className="truncate">#{t.ticketNumber} · {t.subject}</span><UnreadBadge count={t.unreadCount} label="unread replies" /></p>
                     <p className="text-xs text-slate-500">{t.book ? t.book.title : 'General / Account Level'} · {t._count.messages} message{t._count.messages === 1 ? '' : 's'} · Updated {fmtDateTime(t.lastMessageAt)}</p>
                   </div>
                   <StatusBadge status={t.status} />

@@ -14,8 +14,6 @@ A full-stack web application that helps a self-publishing company answer author 
 | Live deployed URL | **Not done** |
 | Actual file upload (bonus) | **Not done**; the attachment control is UI-only, as the brief permits |
 
-Exact per-check results (PASS / BLOCKED / NOT RUN) are in [`docs/LOCAL_VERIFICATION.md`](docs/LOCAL_VERIFICATION.md). Nothing in this README claims more than that file does.
-
 ## Contents
 
 1. [The problem](#the-problem)
@@ -89,11 +87,9 @@ The goal is a portal that makes the team faster **without** making authors wrong
 | Item | State |
 |---|---|
 | Provided dataset (10 authors, 18 books) seeded exactly, edge cases included | Implemented (`backend/prisma/seed.ts`, `backend/prisma/data/bookleaf_sample_data.json`) |
-| Local run instructions, architecture reasoning, AI approach, API docs, limitations | This README, plus `docs/INTERNAL.md` |
+| Local run instructions, architecture reasoning, AI approach, API docs, limitations | This README |
 | One-page write-up | `docs/WRITEUP.md` (deployed model names still to fill in) |
 | Live URL with seeded data and test credentials | Not done |
-
-A line-by-line matrix is in [`docs/COMPLIANCE.md`](docs/COMPLIANCE.md).
 
 ## Technology stack
 
@@ -378,7 +374,7 @@ The 31 tests in `backend/tests/logic.test.ts` cover the deterministic AI logic:
 
 In the build environment these 31 tests were run and passed. `npm run typecheck` is meant to be run by you: there, a stubbed type check was used instead, because the dependencies could not be installed.
 
-**Not covered by automated tests** (and not executed in the build environment): HTTP endpoints, authentication and RBAC, author data isolation, database-backed context building, the draft cache and Regenerate, Socket.IO, provider calls, and the UI. A manual checklist for these (migration drift, seed counts, auth, isolation, Swagger, ticket flows, realtime, AI routes, cache, fallback, Docker) is in [`docs/LOCAL_VERIFICATION.md`](docs/LOCAL_VERIFICATION.md).
+**Not covered by automated tests** (and not executed in the build environment): HTTP endpoints, authentication and RBAC, author data isolation, database-backed context building, the draft cache and Regenerate, Socket.IO, provider calls, and the UI.
 
 ## Design decisions
 
@@ -440,9 +436,8 @@ backend/
     app.ts  routes.ts  server.ts
   tests/logic.test.ts
 frontend/              Next.js app (app/, components/, lib/)
-docs/                  INTERNAL.md, WRITEUP.md, COMPLIANCE.md, LOCAL_VERIFICATION.md
+docs/                  WRITEUP.md
 docker-compose.yml     db + backend + web
-AGENTS.md              architecture and rules for contributors and coding agents
 ```
 
-Further reading: [`docs/INTERNAL.md`](docs/INTERNAL.md) (flows, database design, validation rules, logging), [`docs/WRITEUP.md`](docs/WRITEUP.md) (one-page approach note), [`docs/COMPLIANCE.md`](docs/COMPLIANCE.md), [`docs/LOCAL_VERIFICATION.md`](docs/LOCAL_VERIFICATION.md), [`AGENTS.md`](AGENTS.md).
+Further reading: [`docs/WRITEUP.md`](docs/WRITEUP.md) (one-page approach note).

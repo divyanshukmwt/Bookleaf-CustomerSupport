@@ -218,11 +218,13 @@ model TicketMessage {
   senderRole Role
   body       String   @db.Text
   createdAt  DateTime @default(now())
+  readAt     DateTime? // when the recipient viewed it; null = unread
 
   ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
   sender User   @relation(fields: [senderId], references: [id])
 
   @@index([ticketId, createdAt])
+  @@index([ticketId, senderRole, readAt])
   @@map("ticket_messages")
 }
 
@@ -274,6 +276,7 @@ model AiDraft {
   promptVersion       String
   validationStatus    ValidationStatus?
   validationIssues    Json?
+  contextSnapshot     Json? // facts + knowledge-base references actually supplied for this draft
   error               String?
   requestedById       String? // admin who opened/regenerated; null for system-triggered
   createdAt           DateTime          @default(now())
@@ -294,6 +297,9 @@ model AiRun {
   model         String
   promptVersion String
   isFallback    Boolean     @default(false)
+  attempt       Int         @default(1) // 2 = same-provider retry after malformed output
+  errorCode     String? // short stable code, e.g. TIMEOUT, RATE_LIMITED (see aiMetrics.ts)
+  retryable     Boolean? // whether the failure is the kind that allows retry/fallback; null when not applicable
   inputTokens   Int?
   outputTokens  Int?
   latencyMs     Int
@@ -305,6 +311,7 @@ model AiRun {
 
   @@index([ticketId])
   @@index([createdAt])
+  @@index([provider, createdAt])
   @@map("ai_runs")
 }
 

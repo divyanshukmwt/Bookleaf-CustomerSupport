@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { decideDemoLogin } from '../modules/auth/demoAccounts.logic';
 
 const providerName = z.enum(['gemini', 'openai', 'anthropic']);
 
@@ -26,12 +27,22 @@ const schema = z
     AI_FALLBACK_MODEL: z.string().min(1).optional(),
     AI_FALLBACK_API_KEY: z.string().min(1).optional(),
     AI_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120000).default(25000),
+
+    // Evaluation quick-login (see docs/EVALUATION_LOGIN.md). Off by default. The seed passwords are only
+    // read here so the login page can pre-fill them for the demo accounts, and only when DEMO_LOGIN=true.
+    DEMO_LOGIN: z.enum(['true', 'false']).default('false'),
+    DEMO_LOGIN_ALLOW_PRODUCTION: z.enum(['true', 'false']).default('false'),
+    SEED_AUTHOR_PASSWORD: z.string().optional(),
+    SEED_ADMIN_PASSWORD: z.string().optional(),
   })
   .superRefine((v, ctx) => {
     // The .env.example placeholder is long enough to pass the length check, so reject it explicitly in
     // production: otherwise an unedited .env would run with a publicly known signing secret.
     if (v.NODE_ENV === 'production' && v.JWT_SECRET.startsWith('replace-with')) {
       ctx.addIssue({ code: 'custom', path: ['JWT_SECRET'], message: 'JWT_SECRET is still the .env.example placeholder; generate a real secret' });
+    }
+    for (const message of decideDemoLogin(v).problems) {
+      ctx.addIssue({ code: 'custom', path: ['DEMO_LOGIN'], message });
     }
     for (const slot of ['PRIMARY', 'FALLBACK'] as const) {
       const provider = v[`AI_${slot}_PROVIDER`];
@@ -75,6 +86,7 @@ if (raw.AI_FALLBACK_PROVIDER) {
 export const env = {
   ...raw,
   isProduction: raw.NODE_ENV === 'production',
+  demoLoginEnabled: decideDemoLogin(raw).enabled,
   // Secure cookies by default in production; explicit override for plain-http environments.
   cookieSecure: raw.COOKIE_SECURE ? raw.COOKIE_SECURE === 'true' : raw.NODE_ENV === 'production',
   aiProviders: providers,

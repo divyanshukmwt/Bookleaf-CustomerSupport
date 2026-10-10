@@ -2,8 +2,9 @@
 
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
-import { Button, Card, EmptyState, ErrorBanner, inputClass, PageLoader, PriorityBadge, StatusBadge, Tag } from '@/components/ui';
+import { Button, Card, EmptyState, ErrorBanner, inputClass, PageLoader, PriorityBadge, StatusBadge, Tag, UnreadBadge } from '@/components/ui';
 import { api, errorMessage } from '@/lib/api';
+import { ConnectionBanner } from '@/components/ConnectionBanner';
 import { useSocketEvent } from '@/lib/auth';
 import { ageHours, ageLabel, CATEGORY_LABEL, PRIORITY_LABEL } from '@/lib/format';
 import type { AdminTicketSummary } from '@/lib/types';
@@ -55,6 +56,7 @@ export default function AdminQueuePage() {
   useSocketEvent('ticket:created', load);
   useSocketEvent('ticket:updated', load);
   useSocketEvent('ticket:message', load);
+  useSocketEvent('ticket:read', load);
 
   const reset = <T,>(setter: (v: T) => void) => (v: T) => { setter(v); setPage(1); };
   const pages = data ? Math.max(1, Math.ceil(data.total / data.pageSize)) : 1;
@@ -65,7 +67,7 @@ export default function AdminQueuePage() {
 
       <div className="flex flex-wrap gap-1">
         {TABS.map((t) => (
-          <button key={t.key} onClick={() => reset(setTab)(t.key)} className={`rounded-md px-3 py-1.5 text-sm ${tab === t.key ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-100'}`}>{t.label}</button>
+          <button key={t.key} onClick={() => reset(setTab)(t.key)} className={`rounded-md px-3 py-1.5 text-sm ${tab === t.key ? 'bg-brand-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-100'}`}>{t.label}</button>
         ))}
       </div>
 
@@ -98,6 +100,7 @@ export default function AdminQueuePage() {
       </Card>
 
       <ErrorBanner message={error} />
+      <ConnectionBanner />
       {!data ? <PageLoader /> : data.items.length === 0 ? (
         <EmptyState title="No tickets match these filters" hint={tab === 'active' ? 'Nothing needs attention right now.' : 'Try widening your filters.'} />
       ) : (
@@ -116,19 +119,20 @@ export default function AdminQueuePage() {
                 const edge = t.priority === 'CRITICAL' ? 'border-l-4 border-l-red-600' : t.priority === 'HIGH' ? 'border-l-4 border-l-orange-400' : 'border-l-4 border-l-transparent';
                 return (
                   <tr key={t.id} className={`hover:bg-slate-50 ${edge}`}>
-                    <td className="px-3 py-2"><PriorityBadge priority={t.priority} />{t.priorityOverridden && <span className="ml-1 text-[10px] text-slate-400">edited</span>}</td>
+                    <td className="px-3 py-2"><PriorityBadge priority={t.priority} />{t.priorityOverridden && <span className="ml-1 text-[10px] text-slate-500">edited</span>}</td>
                     <td className="px-3 py-2">
-                      <Link href={`/admin/tickets/${t.id}`} className="font-medium text-indigo-700 hover:underline">#{t.ticketNumber} · {t.subject}</Link>
+                      <Link href={`/admin/tickets/${t.id}`} className={`${t.unreadCount > 0 ? 'font-semibold' : 'font-medium'} text-brand-700 hover:underline`}>#{t.ticketNumber} · {t.subject}</Link>
+                      {t.unreadCount > 0 && <span className="ml-2 align-middle"><UnreadBadge count={t.unreadCount} label="unread messages" /></span>}
                       <div className="text-xs text-slate-500">{t.book ? t.book.title : 'General / Account Level'}</div>
                     </td>
                     <td className="px-3 py-2">{t.author.user.name}</td>
                     <td className="px-3 py-2">
-                      {t.category ? CATEGORY_LABEL[t.category] : <span className="text-slate-400">Unclassified</span>}
+                      {t.category ? CATEGORY_LABEL[t.category] : <span className="text-slate-500">Unclassified</span>}
                       {t.aiStatus === 'FAILED' && <div><Tag tone="red">AI failed</Tag></div>}
                       {(t.aiStatus === 'PENDING' || t.aiStatus === 'PROCESSING') && <div><Tag tone="indigo">Classifying…</Tag></div>}
                     </td>
                     <td className="px-3 py-2"><StatusBadge status={t.status} /></td>
-                    <td className="px-3 py-2">{t.assignedTo?.name ?? <span className="text-slate-400">Unassigned</span>}</td>
+                    <td className="px-3 py-2">{t.assignedTo?.name ?? <span className="text-slate-500">Unassigned</span>}</td>
                     <td className="px-3 py-2 whitespace-nowrap">{ageLabel(t.createdAt)}{overdue && <span className="ml-1"><Tag tone="red">Overdue</Tag></span>}</td>
                   </tr>
                 );

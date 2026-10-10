@@ -46,10 +46,10 @@ export async function adminAddNote(req: Request, res: Response) {
 }
 export async function adminGetDraft(req: Request, res: Response) {
   // draft is null when the admin already replied and the author has not answered yet
-  res.json({ draft: await getOrCreateDraft(id(req), req.user!.id, false) });
+  res.json(await getOrCreateDraft(id(req), req.user!.id, false));
 }
 export async function adminRegenerateDraft(req: Request, res: Response) {
-  res.status(202).json({ draft: await getOrCreateDraft(id(req), req.user!.id, true) });
+  res.status(202).json(await getOrCreateDraft(id(req), req.user!.id, true));
 }
 // Manual retry when automatic classification failed (AI was down) or looks wrong.
 export async function adminReclassify(req: Request, res: Response) {
@@ -58,4 +58,17 @@ export async function adminReclassify(req: Request, res: Response) {
   await prisma.ticket.update({ where: { id: ticket.id }, data: { aiStatus: 'PENDING', aiError: null } });
   void classifyTicket(ticket.id);
   res.status(202).json({ status: 'PENDING' });
+}
+
+export async function getMyUnread(req: Request, res: Response) {
+  res.json(await service.getAuthorUnread(authorScope(req)));
+}
+export async function markMineRead(req: Request, res: Response) {
+  res.json(await service.markAuthorTicketRead(authorScope(req), id(req)));
+}
+export async function adminUnread(_req: Request, res: Response) {
+  res.json(await service.getAdminUnread());
+}
+export async function adminMarkRead(req: Request, res: Response) {
+  res.json(await service.markAdminTicketRead(req.user!.id, id(req)));
 }

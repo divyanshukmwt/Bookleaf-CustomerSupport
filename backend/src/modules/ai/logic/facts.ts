@@ -19,6 +19,7 @@ const FIELD_SETS: Partial<Record<Intent, (keyof BookFacts)[]>> = {
 };
 
 const LABELS: Record<keyof BookFacts, string> = {
+  bookCode: 'Book code', // admin display only: no per-intent field list includes it, so it is never sent to the AI
   title: 'Title',
   isbn: 'ISBN',
   status: 'Status',

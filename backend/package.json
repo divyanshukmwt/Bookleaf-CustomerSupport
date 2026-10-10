@@ -16,7 +16,7 @@
     "db:seed": "prisma db seed",
     "db:reset": "prisma migrate reset",
     "db:studio": "prisma studio",
-    "test": "tsx --test tests/logic.test.ts"
+    "test": "tsx --test tests/*.test.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

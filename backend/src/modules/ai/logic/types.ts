@@ -40,6 +40,7 @@ export type Intent = (typeof INTENTS)[number];
 export type Route = 'DB_ONLY' | 'KB_ONLY' | 'HYBRID' | 'INSUFFICIENT_INFORMATION';
 
 export interface BookFacts {
+  bookCode?: string; // dataset code such as BK001; shown to admins only, never sent to the AI
   title: string;
   isbn: string;
   status: string;

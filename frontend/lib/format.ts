@@ -25,3 +25,15 @@ export const CATEGORY_LABEL: Record<string, string> = {
 };
 export const STATUS_LABEL: Record<string, string> = { OPEN: 'Open', IN_PROGRESS: 'In Progress', RESOLVED: 'Resolved', CLOSED: 'Closed' };
 export const PRIORITY_LABEL: Record<string, string> = { CRITICAL: 'Critical', HIGH: 'High', MEDIUM: 'Medium', LOW: 'Low' };
+export const INTENT_LABEL: Record<string, string> = {
+  SALES_FIGURES: 'Sales figures',
+  ROYALTY_STATUS: 'Royalty status',
+  ROYALTY_CALCULATION: 'Royalty calculation',
+  PRODUCTION_STATUS: 'Production status',
+  AVAILABILITY_ISSUE: 'Availability issue',
+  ISBN_ISSUE: 'ISBN issue',
+  PRINT_QUALITY_ISSUE: 'Print quality issue',
+  POLICY_QUESTION: 'Policy question',
+  METADATA_UPDATE: 'Metadata update',
+  OTHER: 'Other / unclear',
+};

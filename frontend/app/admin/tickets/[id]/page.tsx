@@ -3,12 +3,15 @@
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { ConnectionBanner } from '@/components/ConnectionBanner';
 import { Conversation } from '@/components/Conversation';
+import { TicketContextPanel } from '@/components/TicketContextPanel';
 import { Button, Card, ErrorBanner, inputClass, PageLoader, PriorityBadge, StatusBadge, Tag } from '@/components/ui';
 import { api, ApiError, errorMessage } from '@/lib/api';
 import { useAuth, useSocketEvent } from '@/lib/auth';
+import { applyRead, firstUnreadId, mergeMessages, unreadFor } from '@/lib/messages';
 import { CATEGORY_LABEL, fmtDateTime, PRIORITY_LABEL, STATUS_LABEL } from '@/lib/format';
-import type { AdminTicket, Draft } from '@/lib/types';
+import type { AdminTicket, ContextSnapshot, Draft, DraftResponse, Message } from '@/lib/types';
 
 const ROUTE_LABEL: Record<Draft['route'], string> = {
   DB_ONLY: 'Answered from database (no AI)',
@@ -29,6 +32,7 @@ export default function AdminTicketPage() {
   const [reply, setReply] = useState('');
   const [sending, setSending] = useState(false);
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [context, setContext] = useState<ContextSnapshot | null>(null);
   const [draftLoading, setDraftLoading] = useState(false);
   const [draftError, setDraftError] = useState<string | null>(null);
   const filledFor = useRef<string | null>(null); // draft id already copied into the composer
@@ -36,14 +40,50 @@ export default function AdminTicketPage() {
   const [note, setNote] = useState('');
   const [noting, setNoting] = useState(false);
 
+  const [unreadFromId, setUnreadFromId] = useState<string | null>(null); // divider position, fixed when the page opens
+  const [incoming, setIncoming] = useState(false); // "new message" pill while the conversation is open
+  const dividerSet = useRef(false);
+
   const load = useCallback(() => {
     return api<{ ticket: AdminTicket }>(`/admin/tickets/${id}`)
-      .then((r) => { setTicket(r.ticket); return r.ticket; })
+      .then((r) => {
+        // merge rather than replace, so a message that already arrived over the socket is never doubled
+        setTicket((t) => ({ ...r.ticket, messages: mergeMessages(t?.messages ?? [], r.ticket.messages) }));
+        if (!dividerSet.current) {
+          dividerSet.current = true;
+          setUnreadFromId(firstUnreadId(r.ticket.messages, 'ADMIN'));
+        }
+        return r.ticket;
+      })
       .catch((e) => { setError(e instanceof ApiError && e.status === 404 ? 'Ticket not found.' : errorMessage(e)); return null; });
   }, [id]);
   useEffect(() => { void load(); }, [load]);
-  useSocketEvent<{ ticketId: string }>('ticket:message', (p) => { if (p.ticketId === id) void load(); });
+
+  // Opening the conversation marks the author's messages as read (stored server-side, for the whole team).
+  const markRead = useCallback(() => {
+    if (document.visibilityState !== 'visible') return;
+    api(`/admin/tickets/${id}/read`, { method: 'POST' })
+      .then(() => setTicket((t) => (t ? { ...t, unreadCount: 0, messages: applyRead(t.messages, 'ADMIN', new Date().toISOString()) } : t)))
+      .catch(() => undefined);
+  }, [id]);
+  const hasUnread = ticket ? unreadFor(ticket.messages, 'ADMIN').length > 0 : false;
+  useEffect(() => { if (hasUnread) markRead(); }, [hasUnread, markRead]);
+  useEffect(() => {
+    const onVisible = () => { if (document.visibilityState === 'visible' && hasUnread) markRead(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [hasUnread, markRead]);
+
+  useSocketEvent<{ ticketId: string; message: Message }>('ticket:message', (p) => {
+    if (p.ticketId !== id) return;
+    setTicket((t) => (t ? { ...t, messages: mergeMessages(t.messages, p.message) } : t));
+    if (p.message.senderRole === 'AUTHOR') {
+      setIncoming(true);
+      setTimeout(() => setIncoming(false), 5000);
+    }
+  });
   useSocketEvent<{ ticketId: string }>('ticket:updated', (p) => { if (p.ticketId === id) void load(); });
+  useSocketEvent<{ ticketId: string }>('ticket:read', (p) => { if (p.ticketId === id) void load(); });
 
   const lastMessageId = ticket?.messages[ticket.messages.length - 1]?.id;
   const lastFromAuthor = ticket?.messages[ticket.messages.length - 1]?.senderRole === 'AUTHOR';
@@ -54,8 +94,9 @@ export default function AdminTicketPage() {
     setDraftLoading(true);
     setDraftError(null);
     try {
-      const r = await api<{ draft: Draft | null }>(`/admin/tickets/${id}/draft`);
+      const r = await api<DraftResponse>(`/admin/tickets/${id}/draft`);
       setDraft(r.draft);
+      setContext(r.context);
     } catch (e) {
       setDraftError(errorMessage(e));
     } finally {
@@ -64,7 +105,7 @@ export default function AdminTicketPage() {
   }, [id]);
 
   useEffect(() => {
-    if (lastMessageId && lastFromAuthor) void fetchDraft();
+    if (lastMessageId) void fetchDraft(); // server only generates when the author wrote last; it always returns the context
     else setDraft(null);
   }, [lastMessageId, lastFromAuthor, fetchDraft]);
 
@@ -72,7 +113,7 @@ export default function AdminTicketPage() {
   useEffect(() => {
     if (draft?.status !== 'PROCESSING') return;
     const t = setInterval(() => {
-      api<{ draft: Draft | null }>(`/admin/tickets/${id}/draft`).then((r) => r.draft && setDraft(r.draft)).catch(() => undefined);
+      api<DraftResponse>(`/admin/tickets/${id}/draft`).then((r) => { if (r.draft) setDraft(r.draft); setContext(r.context); }).catch(() => undefined);
     }, 2000);
     return () => clearInterval(t);
   }, [draft?.status, id]);
@@ -88,10 +129,11 @@ export default function AdminTicketPage() {
   async function regenerate() {
     setDraftError(null);
     try {
-      const r = await api<{ draft: Draft }>(`/admin/tickets/${id}/draft/regenerate`, { method: 'POST' });
+      const r = await api<DraftResponse>(`/admin/tickets/${id}/draft/regenerate`, { method: 'POST' });
       filledFor.current = null;
       setDraft(r.draft);
-      if (r.draft.status === 'COMPLETED' && r.draft.body) { filledFor.current = r.draft.id; setReply(r.draft.body); }
+      setContext(r.context);
+      if (r.draft && r.draft.status === 'COMPLETED' && r.draft.body) { filledFor.current = r.draft.id; setReply(r.draft.body); }
     } catch (e) {
       setDraftError(errorMessage(e));
     }
@@ -161,7 +203,7 @@ export default function AdminTicketPage() {
 
   return (
     <div className="space-y-4">
-      <Link href="/admin" className="text-sm text-indigo-600 hover:underline">← Ticket Queue</Link>
+      <Link href="/admin" className="text-sm text-brand-600 hover:underline">← Ticket Queue</Link>
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-xl font-semibold">#{ticket.ticketNumber} · {ticket.subject}</h1>
         <StatusBadge status={ticket.status} />
@@ -172,7 +214,9 @@ export default function AdminTicketPage() {
 
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="space-y-4 lg:col-span-2">
-          <Card title="Conversation"><Conversation messages={ticket.messages} perspective="ADMIN" authorName={ticket.author.user.name} /></Card>
+          <ConnectionBanner />
+          {incoming && <p role="status" aria-live="polite" className="rounded-md bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800">New message from {ticket.author.user.name}</p>}
+          <Card title="Conversation"><Conversation messages={ticket.messages} perspective="ADMIN" authorName={ticket.author.user.name} unreadFromId={unreadFromId} /></Card>
 
           <Card title="Reply to author">
             <DraftPanel draft={draft} loading={draftLoading} error={draftError} awaitingAuthor={!lastFromAuthor} onRegenerate={regenerate} />
@@ -186,6 +230,8 @@ export default function AdminTicketPage() {
         </div>
 
         <div className="space-y-4">
+          <TicketContextPanel ticket={ticket} draft={draft} context={context} loading={draftLoading} />
+
           <Card title="Ticket controls">
             <div className="space-y-3 text-sm">
               <label className="block">Status
@@ -193,13 +239,13 @@ export default function AdminTicketPage() {
                   {Object.entries(STATUS_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                 </select>
               </label>
-              <label className="block">Priority {ticket.aiPriority && <span className="text-xs text-slate-400">(AI suggested: {PRIORITY_LABEL[ticket.aiPriority]}{ticket.aiConfidence !== null ? `, ${(ticket.aiConfidence * 100).toFixed(0)}% confident` : ''})</span>}
+              <label className="block">Priority {ticket.aiPriority && <span className="text-xs text-slate-500">(AI suggested: {PRIORITY_LABEL[ticket.aiPriority]}{ticket.aiConfidence !== null ? `, ${(ticket.aiConfidence * 100).toFixed(0)}% confident` : ''})</span>}
                 <select className={inputClass} value={ticket.priority ?? ''} disabled={saving} onChange={(e) => e.target.value && void update({ priority: e.target.value }, 'Priority updated')}>
                   <option value="" disabled>Unclassified</option>
                   {Object.entries(PRIORITY_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                 </select>
               </label>
-              <label className="block">Category {ticket.aiCategory && <span className="text-xs text-slate-400">(AI suggested: {CATEGORY_LABEL[ticket.aiCategory]})</span>}
+              <label className="block">Category {ticket.aiCategory && <span className="text-xs text-slate-500">(AI suggested: {CATEGORY_LABEL[ticket.aiCategory]})</span>}
                 <select className={inputClass} value={ticket.category ?? ''} disabled={saving} onChange={(e) => e.target.value && void update({ category: e.target.value }, 'Category updated')}>
                   <option value="" disabled>Unclassified</option>
                   {Object.entries(CATEGORY_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
@@ -230,19 +276,9 @@ export default function AdminTicketPage() {
             </div>
           </Card>
 
-          <Card title="Author & book">
-            <dl className="space-y-1 text-sm">
-              <div><dt className="inline text-slate-500">Author: </dt><dd className="inline">{ticket.author.user.name} ({ticket.author.authorCode})</dd></div>
-              {ticket.author.city && <div><dt className="inline text-slate-500">City: </dt><dd className="inline">{ticket.author.city}</dd></div>}
-              <div><dt className="inline text-slate-500">Book: </dt><dd className="inline">{ticket.book ? ticket.book.title : 'General / Account Level'}</dd></div>
-              {ticket.book && <div><dt className="inline text-slate-500">Status: </dt><dd className="inline">{ticket.book.status}</dd></div>}
-              {ticket.book && <div><dt className="inline text-slate-500">Royalty pending: </dt><dd className="inline">₹{ticket.book.royaltyPending.toLocaleString('en-IN')}</dd></div>}
-            </dl>
-          </Card>
-
           <Card title="Internal notes (not visible to the author)">
             <div className="space-y-2">
-              {ticket.internalNotes.length === 0 && <p className="text-sm text-slate-400">No notes yet.</p>}
+              {ticket.internalNotes.length === 0 && <p className="text-sm text-slate-500">No notes yet.</p>}
               {ticket.internalNotes.map((n) => (
                 <div key={n.id} className="rounded-md bg-yellow-50 p-2 text-sm">
                   <p className="whitespace-pre-wrap break-words">{n.body}</p>
@@ -268,12 +304,12 @@ function DraftPanel({ draft, loading, error, awaitingAuthor, onRegenerate }: { d
   if (awaitingAuthor && !draft) {
     return <div className={`${box} flex items-center justify-between gap-3 border-slate-200 bg-slate-50 text-slate-600`}><span>You replied last. A draft will be prepared when the author writes back.</span>{regen}</div>;
   }
-  if (loading && !draft) return <div className={`${box} flex items-center gap-2 border-indigo-200 bg-indigo-50 text-indigo-800`}><span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />Preparing a draft…</div>;
+  if (loading && !draft) return <div className={`${box} flex items-center gap-2 border-brand-200 bg-brand-50 text-brand-800`}><span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />Preparing a draft…</div>;
   if (error) return <div className={`${box} border-red-200 bg-red-50 text-red-800`}>{error}</div>;
   if (!draft) return null;
 
   if (draft.status === 'PROCESSING') {
-    return <div className={`${box} flex items-center gap-2 border-indigo-200 bg-indigo-50 text-indigo-800`}><span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />AI is drafting a reply from the Knowledge Base and author data…</div>;
+    return <div className={`${box} flex items-center gap-2 border-brand-200 bg-brand-50 text-brand-800`}><span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />AI is drafting a reply from the Knowledge Base and author data…</div>;
   }
   if (draft.status === 'FAILED') {
     return (
@@ -296,17 +332,17 @@ function DraftPanel({ draft, loading, error, awaitingAuthor, onRegenerate }: { d
     );
   }
   return (
-    <div className={`${box} border-indigo-200 bg-indigo-50 text-indigo-900`}>
+    <div className={`${box} border-brand-200 bg-brand-50 text-brand-900`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
           <Tag tone="indigo">{draft.source === 'AI' ? 'AI draft' : 'Template draft (no AI)'}</Tag>
           <Tag>{draft.route === 'INSUFFICIENT_INFORMATION' ? 'Outside support scope (no author data used)' : ROUTE_LABEL[draft.route]}</Tag>
-          {draft.validationStatus === 'PASSED' && <Tag tone="green">Checks passed</Tag>}
+          {draft.validationStatus === 'PASSED' && <Tag tone="green">Passed automated checks</Tag>}
           {draft.validationStatus === 'FLAGGED' && <Tag tone="amber">Review needed</Tag>}
         </div>
         {regen}
       </div>
-      <p className="mt-2 text-xs">Review and edit before sending: you are responsible for what the author receives.</p>
+      <p className="mt-2 text-xs">AI-generated text. Compare it with the database facts and knowledge-base references beside this page, then edit before sending: you are responsible for what the author receives.</p>
       {draft.validationStatus === 'FLAGGED' && (
         <ul className="mt-1 list-disc pl-5 text-xs text-amber-900">{draft.validationIssues?.map((i) => <li key={i.code + i.message}>{i.message}</li>)}</ul>
       )}

@@ -4,6 +4,7 @@ import { prisma } from '../../lib/prisma';
 import { AiError, aiService } from './aiService';
 import { buildContext, type DraftContext } from './context.service';
 import { ensureSummary } from './conversation.service';
+import type { ContextSnapshot } from './logic/contextSnapshot';
 import { parseDraftReply } from './logic/output';
 import { outOfScopeTemplate, salesTemplate } from './logic/templates';
 import { CATEGORY_LABELS } from './logic/types';
@@ -22,6 +23,7 @@ export interface DraftDto {
   body: string | null;
   validationStatus: AiDraft['validationStatus'];
   validationIssues: unknown;
+  context: unknown; // ContextSnapshot, or null for drafts created before snapshots were recorded
   error: string | null;
   createdAt: Date;
 }
@@ -36,6 +38,7 @@ function toDto(d: AiDraft): DraftDto {
     body: d.validationStatus === 'REJECTED' ? null : d.body,
     validationStatus: d.validationStatus,
     validationIssues: d.validationIssues,
+    context: d.contextSnapshot,
     error: d.error,
     createdAt: d.createdAt,
   };
@@ -50,15 +53,21 @@ function baseData(ctx: DraftContext, requestedById: string | null) {
     dbContextHash: ctx.dbContextHash,
     kbVersion: ctx.kbVersion,
     promptVersion: DRAFT_PROMPT_VERSION,
+    contextSnapshot: ctx.snapshot as unknown as Prisma.InputJsonValue,
     requestedById,
   };
 }
 
 // Opening a ticket calls this with force=false: a draft with an identical cache key is reused and
 // the LLM is NOT called again. Regenerate calls it with force=true.
-export async function getOrCreateDraft(ticketId: string, adminId: string, force: boolean): Promise<DraftDto | null> {
+export async function getOrCreateDraft(ticketId: string, adminId: string, force: boolean): Promise<{ draft: DraftDto | null; context: ContextSnapshot }> {
   const ctx = await buildContext(ticketId);
+  // `context` is the live view of what a draft would be built from right now; `draft.context` is what
+  // the stored draft was actually built from. Both come from the one buildContext call above.
+  return { draft: await resolveDraft(ctx, ticketId, adminId, force), context: ctx.snapshot };
+}
 
+async function resolveDraft(ctx: DraftContext, ticketId: string, adminId: string, force: boolean): Promise<DraftDto | null> {
   if (!force) {
     const cached = await prisma.aiDraft.findFirst({
       where: {

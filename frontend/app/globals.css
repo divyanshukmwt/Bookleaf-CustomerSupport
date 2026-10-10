@@ -2,8 +2,14 @@
 @tailwind components;
 @tailwind utilities;
 
-body { @apply bg-[#faf9f8] text-slate-900 antialiased; }
+body { @apply bg-slate-50 text-slate-900 antialiased; }
 
-::selection { @apply bg-indigo-100 text-indigo-900; }
+/* Page titles use a serif face (a publishing feel); everything operational stays in the system sans. */
+h1 { @apply font-display text-slate-900; }
 
-:focus-visible { @apply outline-none ring-2 ring-indigo-500 ring-offset-2; }
+/* Visible keyboard focus everywhere, including controls that remove the default outline. */
+:focus-visible { outline: 2px solid theme('colors.brand.600'); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}

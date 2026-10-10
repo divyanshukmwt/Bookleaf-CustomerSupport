@@ -71,6 +71,12 @@ export interface ResolvedTopic {
   scope: Scope;
 }
 
+// A category counts as trusted when the AI chose it or an admin set it. A category that only reflects
+// the author's own pick at submission time is a hint, so it is not enough to skip the scope check.
+export function isCategoryTrusted(t: { category: Category | null; aiCategory: Category | null; categoryOverridden: boolean }): boolean {
+  return t.categoryOverridden || (t.aiCategory !== null && t.aiCategory === t.category);
+}
+
 // The current author message takes precedence over the original classification.
 export function resolveTopic(input: {
   ticketCategory: Category | null;
@@ -78,15 +84,18 @@ export function resolveTopic(input: {
   latestAuthorMessage: string;
   isFirstMessage: boolean;
   subject?: string; // only used to judge scope of the first message
+  // false when the category is only the author's own pick (not AI-classified or admin-set), so it
+  // cannot bypass the first-message scope check. Defaults to true.
+  categoryTrusted?: boolean;
 }): ResolvedTopic {
-  const { ticketCategory, ticketIntent, latestAuthorMessage, isFirstMessage, subject } = input;
+  const { ticketCategory, ticketIntent, latestAuthorMessage, isFirstMessage, subject, categoryTrusted = true } = input;
   const detected = detectTopic(latestAuthorMessage);
   const unrelated = (scope: Scope): ResolvedTopic => ({ category: null, intent: 'OTHER', changed: false, scope });
 
   // First message: trust the AI classification when it chose a specific support category. If the AI
   // was unavailable or filed it as GENERAL_INQUIRY, the scope gate still protects author data.
   if (isFirstMessage) {
-    const specific = ticketCategory !== null && ticketCategory !== 'GENERAL_INQUIRY';
+    const specific = categoryTrusted && ticketCategory !== null && ticketCategory !== 'GENERAL_INQUIRY';
     if (!specific) {
       const scope = assessScope(`${subject ?? ''}\n${latestAuthorMessage}`, { allowContinuation: false });
       if (scope === 'UNCLEAR' || scope === 'OUT_OF_SCOPE') return unrelated(scope);

@@ -2,26 +2,29 @@ import type { Prisma } from '@prisma/client';
 import { logger } from '../../config/logger';
 import { audit } from '../../lib/audit';
 import { Errors } from '../../lib/errors';
+import { assertAuthorOwnsBook } from './bookOwnership';
+import { senderRoleToMark, toUnreadMap, unreadTotal } from './readState';
 import { prisma } from '../../lib/prisma';
 import { realtime } from '../../realtime/socket';
 import { detectTopic } from '../ai/logic/topic';
 import type { AdminListQuery, AdminUpdateInput, CreateTicketInput } from './ticket.schemas';
+import {
+  TicketStatus,
+  TicketCategory,
+  TicketPriority,
+} from '@prisma/client';
 
-const messageSelect = { id: true, ticketId: true, senderRole: true, body: true, createdAt: true } as const;
+const messageSelect = { id: true, ticketId: true, senderRole: true, body: true, createdAt: true, readAt: true } as const;
 
 // ------------------------------------------------------------------ author side
 
 export async function createTicket(authorId: string, userId: string, input: CreateTicketInput) {
-  if (input.bookId) {
-    // Ownership check: the book must belong to this author. 404 (not 403) so ids can't be probed.
-    const book = await prisma.book.findFirst({ where: { id: input.bookId, authorId }, select: { id: true } });
-    if (!book) throw Errors.notFound('Book not found');
-  }
+  if (input.bookId) await assertAuthorOwnsBook(prisma, authorId, input.bookId);
 
   // Ticket + first message + conversation state are saved atomically. Nothing here touches AI.
   const ticket = await prisma.$transaction(async (tx) => {
     const created = await tx.ticket.create({
-      data: { authorId, bookId: input.bookId, subject: input.subject },
+      data: { authorId, bookId: input.bookId, subject: input.subject }, // category stays null until the AI classification (or an admin) sets it
       select: { id: true, ticketNumber: true, subject: true, status: true, createdAt: true, book: { select: { id: true, title: true } } },
     });
     const message = await tx.ticketMessage.create({ data: { ticketId: created.id, senderId: userId, senderRole: 'AUTHOR', body: input.description } });
@@ -35,16 +38,46 @@ export async function createTicket(authorId: string, userId: string, input: Crea
   return ticket;
 }
 
-export async function listAuthorTickets(authorId: string) {
-  return prisma.ticket.findMany({
-    where: { authorId },
-    orderBy: { lastMessageAt: 'desc' },
-    select: {
-      id: true, ticketNumber: true, subject: true, status: true, createdAt: true, lastMessageAt: true,
-      book: { select: { id: true, title: true } },
-      _count: { select: { messages: true } },
-    },
+// Unread = support replies the author has not opened yet. Counted straight from stored rows, so the
+// numbers always match the database. One grouped query regardless of how many tickets there are.
+async function authorUnreadMap(authorId: string): Promise<Record<string, number>> {
+  const groups = await prisma.ticketMessage.groupBy({
+    by: ['ticketId'],
+    where: { senderRole: 'ADMIN', readAt: null, ticket: { authorId } },
+    _count: { _all: true },
   });
+  return toUnreadMap(groups.map((g) => ({ ticketId: g.ticketId, count: g._count._all })));
+}
+
+export async function listAuthorTickets(authorId: string) {
+  const [items, unread] = await Promise.all([
+    prisma.ticket.findMany({
+      where: { authorId },
+      orderBy: { lastMessageAt: 'desc' },
+      select: {
+        id: true, ticketNumber: true, subject: true, status: true, createdAt: true, lastMessageAt: true,
+        book: { select: { id: true, title: true } },
+        _count: { select: { messages: true } },
+      },
+    }),
+    authorUnreadMap(authorId),
+  ]);
+  return items.map((t) => ({ ...t, unreadCount: unread[t.id] ?? 0 }));
+}
+
+export async function getAuthorUnread(authorId: string) {
+  const map = await authorUnreadMap(authorId);
+  return { total: unreadTotal(map), byTicket: map };
+}
+
+// The author opened the conversation: their unread support replies become read. Ownership is checked
+// in the query itself, so another author's ticket id is a 404 and nothing is touched.
+export async function markAuthorTicketRead(authorId: string, ticketId: string) {
+  const ticket = await prisma.ticket.findFirst({ where: { id: ticketId, authorId }, select: { id: true } });
+  if (!ticket) throw Errors.notFound('Ticket not found');
+  const { count } = await prisma.ticketMessage.updateMany({ where: { ticketId, senderRole: senderRoleToMark('AUTHOR'), readAt: null }, data: { readAt: new Date() } });
+  if (count > 0) realtime.toAdmins('ticket:read', { ticketId, by: 'AUTHOR' }); // lets admins show "seen"
+  return { marked: count };
 }
 
 export async function getAuthorTicket(authorId: string, ticketId: string) {
@@ -101,9 +134,15 @@ const adminListSelect = {
 
 export async function listAdminTickets(adminId: string, q: AdminListQuery) {
   const and: Prisma.TicketWhereInput[] = [];
-  if (q.status?.length) and.push({ status: { in: q.status } });
-  if (q.category?.length) and.push({ category: { in: q.category } });
-  if (q.priority?.length) and.push({ priority: { in: q.priority } });
+  if (q.status?.length) {
+    and.push({ status: { in: q.status as TicketStatus[] } });
+  }
+  if (q.category?.length) {
+    and.push({ category: { in: q.category as TicketCategory[] } });
+  }
+  if (q.priority?.length) {
+    and.push({ priority: { in: q.priority as TicketPriority[] } });
+  }
   if (q.assignee === 'me') and.push({ assignedToId: adminId });
   if (q.assignee === 'unassigned') and.push({ assignedToId: null });
   if (q.from) and.push({ createdAt: { gte: q.from } });
@@ -128,11 +167,35 @@ export async function listAdminTickets(adminId: string, q: AdminListQuery) {
         ? [{ createdAt: 'asc' }]
         : [{ priority: { sort: 'asc', nulls: 'last' } }, { createdAt: 'asc' }];
 
-  const [total, items] = await Promise.all([
+  const [total, rows] = await Promise.all([
     prisma.ticket.count({ where }),
     prisma.ticket.findMany({ where, orderBy, skip: (q.page - 1) * q.pageSize, take: q.pageSize, select: adminListSelect }),
   ]);
-  return { items, total, page: q.page, pageSize: q.pageSize };
+  // Unread author messages for just the tickets on this page (one grouped query).
+  const groups = rows.length
+    ? await prisma.ticketMessage.groupBy({ by: ['ticketId'], where: { ticketId: { in: rows.map((r) => r.id) }, senderRole: 'AUTHOR', readAt: null }, _count: { _all: true } })
+    : [];
+  const unread = toUnreadMap(groups.map((g) => ({ ticketId: g.ticketId, count: g._count._all })));
+  return { items: rows.map((r) => ({ ...r, unreadCount: unread[r.id] ?? 0 })), total, page: q.page, pageSize: q.pageSize };
+}
+
+// Team-wide inbox: author messages no admin has opened yet.
+export async function getAdminUnread() {
+  const groups = await prisma.ticketMessage.groupBy({ by: ['ticketId'], where: { senderRole: 'AUTHOR', readAt: null }, _count: { _all: true } });
+  const map = toUnreadMap(groups.map((g) => ({ ticketId: g.ticketId, count: g._count._all })));
+  return { total: unreadTotal(map), tickets: Object.keys(map).length };
+}
+
+export async function markAdminTicketRead(adminId: string, ticketId: string) {
+  const ticket = await prisma.ticket.findUnique({ where: { id: ticketId }, select: { id: true, author: { select: { userId: true } } } });
+  if (!ticket) throw Errors.notFound('Ticket not found');
+  const { count } = await prisma.ticketMessage.updateMany({ where: { ticketId, senderRole: senderRoleToMark('ADMIN'), readAt: null }, data: { readAt: new Date() } });
+  if (count > 0) {
+    realtime.toAuthor(ticket.author.userId, 'ticket:read', { ticketId, by: 'ADMIN' }); // author sees "Seen"
+    realtime.toAdmins('ticket:read', { ticketId, by: 'ADMIN' }); // other admins' badges update
+  }
+  logger.debug({ event: 'messages.read', ticketId, adminId, count }, 'admin marked author messages read');
+  return { marked: count };
 }
 
 export async function getAdminTicket(ticketId: string) {
@@ -143,7 +206,7 @@ export async function getAdminTicket(ticketId: string) {
       aiCategory: true, aiPriority: true, intent: true, aiError: true,
       author: { select: { authorCode: true, city: true, user: { select: { name: true, email: true } } } },
       book: { select: { id: true, title: true, isbn: true, status: true, totalCopiesSold: true, royaltyPending: true } },
-      messages: { orderBy: { createdAt: 'asc' }, select: messageSelect },
+      messages: { orderBy: { createdAt: 'asc' }, select: { ...messageSelect, sender: { select: { name: true } } } },
       internalNotes: { orderBy: { createdAt: 'asc' }, select: { id: true, body: true, createdAt: true, createdBy: { select: { id: true, name: true } } } },
       conversationState: { select: { currentTopic: true, summary: true, version: true } },
     },

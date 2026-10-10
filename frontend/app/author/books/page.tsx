@@ -4,10 +4,11 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { Card, EmptyState, ErrorBanner, PageLoader, Tag } from '@/components/ui';
 import { api, errorMessage } from '@/lib/api';
+import { bookQueryHref } from '@/lib/bookParam';
 import { fmtDate, inr } from '@/lib/format';
 import type { Book } from '@/lib/types';
 
-const NA = <span className="text-slate-400">Not applicable yet</span>;
+const NA = <span className="text-slate-500">Not applicable yet</span>;
 
 export default function BooksPage() {
   const [books, setBooks] = useState<Book[] | null>(null);
@@ -48,7 +49,7 @@ export default function BooksPage() {
               </dl>
               {inProduction && <p className="mt-3 rounded bg-amber-50 px-2 py-1.5 text-xs text-amber-800">This book is still in production. Sales and royalty details will appear after it is published.</p>}
               <div className="mt-3 text-right">
-                <Link href="/author/tickets/new" className="text-xs font-medium text-indigo-600 hover:underline">Ask a question about this book →</Link>
+                <Link href={bookQueryHref(b.id)} className="text-xs font-medium text-brand-600 hover:underline">Ask a question about this book →</Link>
               </div>
             </Card>
           );
