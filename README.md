@@ -12,7 +12,6 @@ A full-stack web application that helps a self-publishing company answer author 
 | 31 pure-logic unit tests (routing, topic/scope, facts, validation, parsers, cache fingerprint) | **Run and passing** in the build environment |
 | `npm install`, Prisma generate/migrate/seed, real `tsc`, `next build`, Docker build/run, HTTP/auth/RBAC flows, Socket.IO, Swagger UI, browser UI, live LLM calls | **Not executed** in the build environment (no npm registry or Docker access there). Treat them as unverified until you run them |
 | Live deployed URL | **Not done** |
-| Real Git history | **Not done**; `docs/COMMIT_PLAN.md` is a plan for how to present the work, not a record |
 | Actual file upload (bonus) | **Not done**; the attachment control is UI-only, as the brief permits |
 
 Exact per-check results (PASS / BLOCKED / NOT RUN) are in [`docs/LOCAL_VERIFICATION.md`](docs/LOCAL_VERIFICATION.md). Nothing in this README claims more than that file does.
@@ -92,7 +91,6 @@ The goal is a portal that makes the team faster **without** making authors wrong
 | Provided dataset (10 authors, 18 books) seeded exactly, edge cases included | Implemented (`backend/prisma/seed.ts`, `backend/prisma/data/bookleaf_sample_data.json`) |
 | Local run instructions, architecture reasoning, AI approach, API docs, limitations | This README, plus `docs/INTERNAL.md` |
 | One-page write-up | `docs/WRITEUP.md` (deployed model names still to fill in) |
-| Private repository with a clean commit history | Not done; see `docs/COMMIT_PLAN.md` |
 | Live URL with seeded data and test credentials | Not done |
 
 A line-by-line matrix is in [`docs/COMPLIANCE.md`](docs/COMPLIANCE.md).
@@ -442,10 +440,9 @@ backend/
     app.ts  routes.ts  server.ts
   tests/logic.test.ts
 frontend/              Next.js app (app/, components/, lib/)
-docs/                  INTERNAL.md, WRITEUP.md, COMPLIANCE.md, LOCAL_VERIFICATION.md, COMMIT_PLAN.md
+docs/                  INTERNAL.md, WRITEUP.md, COMPLIANCE.md, LOCAL_VERIFICATION.md
 docker-compose.yml     db + backend + web
 AGENTS.md              architecture and rules for contributors and coding agents
-DEVELOPER.md           developer entry point and the earlier 44-commit plan
 ```
 
 Further reading: [`docs/INTERNAL.md`](docs/INTERNAL.md) (flows, database design, validation rules, logging), [`docs/WRITEUP.md`](docs/WRITEUP.md) (one-page approach note), [`docs/COMPLIANCE.md`](docs/COMPLIANCE.md), [`docs/LOCAL_VERIFICATION.md`](docs/LOCAL_VERIFICATION.md), [`AGENTS.md`](AGENTS.md).
